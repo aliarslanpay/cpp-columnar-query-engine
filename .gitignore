@@ -1,0 +1,19 @@
+# Build output
+build/
+out/
+CMakeUserPresets.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Scratch benchmark output (committed results live in results/)
+results/tmp/
