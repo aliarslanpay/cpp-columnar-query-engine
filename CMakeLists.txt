@@ -19,12 +19,16 @@ target_compile_options(cqe_warnings INTERFACE
   $<$<BOOL:${CQE_WARNINGS_AS_ERRORS}>:-Werror>)
 
 add_library(cqe STATIC
+  src/block_layout.cpp
+  src/block_skip.cpp
   src/column_store.cpp
   src/dataset.cpp
   src/executor.cpp
   src/reference.cpp
   src/row_store.cpp
-  src/sum_bound.cpp)
+  src/sum_bound.cpp
+  src/zone_map.cpp
+  src/zone_mapped_table.cpp)
 target_include_directories(cqe PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_compile_features(cqe PUBLIC cxx_std_20)
 target_link_libraries(cqe PRIVATE cqe_warnings)
