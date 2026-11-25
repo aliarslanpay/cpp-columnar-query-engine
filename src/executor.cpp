@@ -1,13 +1,18 @@
 #include "cqe/executor.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <stdexcept>
 #include <type_traits>
 #include <variant>
 #include <vector>
 
 #include "cqe/block_layout.hpp"
+#include "cqe/kernels.hpp"
+#include "cqe/parallel_scan.hpp"
+#include "cqe/zone_map.hpp"
 
 namespace cqe {
 namespace {
@@ -24,6 +29,85 @@ QueryResult scan(std::size_t row_count, MatchAt match_at, AmountAt amount_at) {
   }
   return result;
 }
+
+// Per-block work of the ScanOptions overload, for one predicate type P and one mode. The blocks
+// are the candidate blocks, given as row ranges computed before any parallel region.
+template <class P, ScanMode Mode>
+class CandidateScanner final : public BlockScanner {
+ public:
+  CandidateScanner(const ColumnStore& store, std::span<const BlockRange> ranges, const P& predicate,
+                   std::size_t largest_block)
+      : timestamps_(store.timestamps()),
+        device_ids_(store.device_ids()),
+        amounts_(store.amounts()),
+        ranges_(ranges),
+        predicate_(predicate),
+        largest_block_(largest_block) {}
+
+  [[nodiscard]] std::size_t block_count() const noexcept override { return ranges_.size(); }
+
+  [[nodiscard]] std::size_t scratch_size() const noexcept override {
+    return Mode == ScanMode::SelectionVector ? largest_block_ : 0;
+  }
+
+  [[nodiscard]] BlockPartial scan_block(std::size_t i,
+                                        std::span<RowOffset> scratch) const noexcept override {
+    const BlockRange range = ranges_[i];
+    const std::span<const std::int64_t> block_amounts = amounts_.subspan(range.begin, range.size());
+    QueryResult block;
+    if constexpr (Mode == ScanMode::Fused) {
+      static_cast<void>(scratch);
+      block = fused_block(range, block_amounts);
+    } else {
+      // scratch.size() == largest_block_ >= range.size(), as select_* requires.
+      const std::size_t selected = select_block(range, scratch);
+      block.count = static_cast<std::int64_t>(selected);
+      block.sum = sum_selected(block_amounts, scratch.first(selected));
+    }
+    return BlockPartial{1, range.size(), block.count, block.sum};
+  }
+
+ private:
+  QueryResult fused_block(BlockRange range, std::span<const std::int64_t> block_amounts) const noexcept {
+    const auto amount_at = [block_amounts](std::size_t j) { return block_amounts[j]; };
+    if constexpr (std::is_same_v<P, TimestampRange>) {
+      const std::span<const std::int64_t> ts = timestamps_.subspan(range.begin, range.size());
+      const std::int64_t lo = predicate_.lo;
+      const std::int64_t hi = predicate_.hi;
+      return scan(
+          range.size(),
+          [ts, lo, hi](std::size_t j) -> bool {
+            const std::int64_t t = ts[j];
+            return (lo <= t) & (t <= hi);
+          },
+          amount_at);
+    } else {
+      static_assert(std::is_same_v<P, DeviceEquals>);
+      const std::span<const std::int32_t> dev = device_ids_.subspan(range.begin, range.size());
+      const std::int32_t value = predicate_.value;
+      return scan(
+          range.size(), [dev, value](std::size_t j) -> bool { return dev[j] == value; }, amount_at);
+    }
+  }
+
+  std::size_t select_block(BlockRange range, std::span<RowOffset> scratch) const noexcept {
+    if constexpr (std::is_same_v<P, TimestampRange>) {
+      return select_range(timestamps_.subspan(range.begin, range.size()), predicate_.lo,
+                          predicate_.hi, scratch);
+    } else {
+      static_assert(std::is_same_v<P, DeviceEquals>);
+      return select_equals(device_ids_.subspan(range.begin, range.size()), predicate_.value,
+                           scratch);
+    }
+  }
+
+  std::span<const std::int64_t> timestamps_;
+  std::span<const std::int32_t> device_ids_;
+  std::span<const std::int64_t> amounts_;
+  std::span<const BlockRange> ranges_;
+  P predicate_;
+  std::size_t largest_block_;
+};
 
 }  // namespace
 
@@ -140,6 +224,55 @@ Execution zone_map_scan(const ZoneMappedTable& table, const Query& query) {
       },
       query.predicate);
   execution.stats.rows_matched = static_cast<std::uint64_t>(execution.result.count);
+  return execution;
+}
+
+Execution zone_map_scan(const ZoneMappedTable& table, const Query& query,
+                        const ScanOptions& options) {
+  if (options.threads < 1) {
+    throw std::invalid_argument("zone_map_scan: ScanOptions::threads must be >= 1");
+  }
+  if (options.mode != ScanMode::Fused && options.mode != ScanMode::SelectionVector) {
+    throw std::invalid_argument("zone_map_scan: unknown ScanMode");
+  }
+
+  // Everything that can allocate or throw happens here, before any parallel region.
+  const ZoneMap& zone_map = table.zone_map();
+  const BlockLayout& layout = zone_map.layout();
+  const std::vector<std::size_t> candidates = zone_map.candidate_blocks(query.predicate);
+  std::vector<BlockRange> ranges;
+  ranges.reserve(candidates.size());
+  std::size_t largest_block = 0;
+  for (const std::size_t b : candidates) {
+    ranges.push_back(layout.block(b));
+    largest_block = std::max(largest_block, ranges.back().size());
+  }
+  if (options.mode == ScanMode::SelectionVector && largest_block > kMaxSelectableRows) {
+    throw std::length_error(
+        "zone_map_scan: a candidate block has more rows than a selection vector can address");
+  }
+
+  const BlockPartial total = std::visit(
+      [&](const auto& predicate) -> BlockPartial {
+        using P = std::decay_t<decltype(predicate)>;
+        if (options.mode == ScanMode::Fused) {
+          const CandidateScanner<P, ScanMode::Fused> scanner(table.store(), ranges, predicate,
+                                                             largest_block);
+          return scan_blocks_parallel(scanner, options.threads);
+        }
+        const CandidateScanner<P, ScanMode::SelectionVector> scanner(table.store(), ranges,
+                                                                     predicate, largest_block);
+        return scan_blocks_parallel(scanner, options.threads);
+      },
+      query.predicate);
+
+  Execution execution;
+  execution.result = QueryResult{total.count, total.sum};
+  execution.stats.blocks_total = layout.block_count();
+  execution.stats.blocks_scanned = total.blocks;  // reduced over the threads
+  execution.stats.blocks_skipped = layout.block_count() - candidates.size();
+  execution.stats.rows_examined = total.rows_examined;
+  execution.stats.rows_matched = static_cast<std::uint64_t>(total.count);
   return execution;
 }
 

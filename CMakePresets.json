@@ -46,7 +46,8 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_CXX_FLAGS": "-O1 -fsanitize=thread -fno-omit-frame-pointer",
-        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread"
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread",
+        "CQE_OMP_TSAN_CHECKS": "ON"
       }
     }
   ],
@@ -78,7 +79,9 @@
       "name": "tsan",
       "inherits": "base",
       "configurePreset": "tsan",
-      "environment": { "TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1" }
+      "environment": {
+        "TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1:ignore_noninstrumented_modules=1"
+      }
     }
   ]
 }

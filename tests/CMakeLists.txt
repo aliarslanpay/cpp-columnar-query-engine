@@ -19,11 +19,24 @@ add_executable(cqe_tests
   test_dataset.cpp
   test_equivalence.cpp
   test_fixtures.cpp
+  test_kernels.cpp
   test_row_store.cpp
   test_sum_bound.cpp
   test_zone_map.cpp
   test_zone_map_scan.cpp)
 target_link_libraries(cqe_tests PRIVATE cqe cqe_warnings GTest::gtest_main)
 
+# Tests that run code in OpenMP parallel regions. A separate executable with the `openmp` label,
+# so a preset can include or exclude them as a group.
+add_executable(cqe_parallel_tests
+  test_parallel_execution.cpp
+  test_parallel_scan.cpp)
+target_link_libraries(cqe_parallel_tests PRIVATE cqe cqe_warnings GTest::gtest_main)
+if(CQE_OPENMP)
+  target_link_libraries(cqe_parallel_tests PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
 include(GoogleTest)
 gtest_discover_tests(cqe_tests DISCOVERY_MODE PRE_TEST NO_PRETTY_VALUES)
+gtest_discover_tests(cqe_parallel_tests DISCOVERY_MODE PRE_TEST NO_PRETTY_VALUES
+  PROPERTIES LABELS openmp)

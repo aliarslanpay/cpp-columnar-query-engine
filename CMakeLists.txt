@@ -11,6 +11,16 @@ set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 option(CQE_BUILD_TESTS "Build the test suite" ON)
 option(CQE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors in project targets" OFF)
+option(CQE_OPENMP "Build parallel execution with OpenMP" ON)
+option(CQE_OMP_TSAN_CHECKS
+  "Build the ThreadSanitizer + OpenMP control programs (for the tsan preset)" OFF)
+
+if(CQE_OPENMP)
+  find_package(OpenMP REQUIRED COMPONENTS CXX)
+endif()
+if(CQE_OMP_TSAN_CHECKS AND NOT CQE_OPENMP)
+  message(FATAL_ERROR "CQE_OMP_TSAN_CHECKS requires CQE_OPENMP")
+endif()
 
 # Warning flags for project targets only (not for third-party code such as GoogleTest).
 add_library(cqe_warnings INTERFACE)
@@ -24,6 +34,8 @@ add_library(cqe STATIC
   src/column_store.cpp
   src/dataset.cpp
   src/executor.cpp
+  src/kernels.cpp
+  src/parallel_scan.cpp
   src/reference.cpp
   src/row_store.cpp
   src/sum_bound.cpp
@@ -32,8 +44,14 @@ add_library(cqe STATIC
 target_include_directories(cqe PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_compile_features(cqe PUBLIC cxx_std_20)
 target_link_libraries(cqe PRIVATE cqe_warnings)
+if(CQE_OPENMP)
+  target_link_libraries(cqe PRIVATE OpenMP::OpenMP_CXX)
+endif()
 
 if(CQE_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
+  if(CQE_OMP_TSAN_CHECKS)
+    add_subdirectory(tests/omp_tsan)
+  endif()
 endif()
