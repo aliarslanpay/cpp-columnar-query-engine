@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <ranges>
 #include <span>
 #include <stdexcept>
 #include <type_traits>
@@ -108,6 +109,50 @@ class CandidateScanner final : public BlockScanner {
   P predicate_;
   std::size_t largest_block_;
 };
+
+void validate_scan_options(const ScanOptions& options) {
+  if (options.threads < 1) {
+    throw std::invalid_argument("ScanOptions::threads must be >= 1");
+  }
+  if (options.mode != ScanMode::Fused && options.mode != ScanMode::SelectionVector) {
+    throw std::invalid_argument("Unknown ScanMode");
+  }
+}
+
+// The candidate IDs come from this table's layout. Prepare row ranges before entering OpenMP.
+template <class Candidates>
+Execution scan_candidates(const ZoneMappedTable& table, const Predicate& predicate,
+                          const Candidates& candidates, const ScanOptions& options) {
+  const BlockLayout& layout = table.zone_map().layout();
+  std::vector<BlockRange> ranges;
+  ranges.reserve(candidates.size());
+  std::size_t largest_block = 0;
+  for (const std::size_t b : candidates) {
+    ranges.push_back(layout.block(b));
+    largest_block = std::max(largest_block, ranges.back().size());
+  }
+  if (options.mode == ScanMode::SelectionVector && largest_block > kMaxSelectableRows) {
+    throw std::length_error("A candidate block has more rows than a selection vector can address");
+  }
+
+  const BlockPartial total = std::visit(
+      [&](const auto& p) {
+        using P = std::decay_t<decltype(p)>;
+        if (options.mode == ScanMode::Fused) {
+          const CandidateScanner<P, ScanMode::Fused> scanner(table.store(), ranges, p,
+                                                             largest_block);
+          return scan_blocks_parallel(scanner, options.threads);
+        }
+        const CandidateScanner<P, ScanMode::SelectionVector> scanner(table.store(), ranges, p,
+                                                                     largest_block);
+        return scan_blocks_parallel(scanner, options.threads);
+      },
+      predicate);
+
+  return {{total.count, total.sum},
+          {layout.block_count(), total.blocks, layout.block_count() - total.blocks,
+           total.rows_examined, static_cast<std::uint64_t>(total.count)}};
+}
 
 }  // namespace
 
@@ -229,51 +274,58 @@ Execution zone_map_scan(const ZoneMappedTable& table, const Query& query) {
 
 Execution zone_map_scan(const ZoneMappedTable& table, const Query& query,
                         const ScanOptions& options) {
-  if (options.threads < 1) {
-    throw std::invalid_argument("zone_map_scan: ScanOptions::threads must be >= 1");
+  validate_scan_options(options);
+  const auto candidates = table.zone_map().candidate_blocks(query.predicate);
+  return scan_candidates(table, query.predicate, candidates, options);
+}
+
+Execution full_scan(const ZoneMappedTable& table, const Query& query, const ScanOptions& options) {
+  validate_scan_options(options);
+  const BlockLayout& layout = table.zone_map().layout();
+  const std::size_t blocks = layout.block_count();
+  if (options.mode == ScanMode::Fused && options.threads == 1) {
+    const QueryResult result = full_scan(table.store(), query);
+    return {result, {blocks, blocks, 0, layout.row_count(),
+                     static_cast<std::uint64_t>(result.count)}};
   }
-  if (options.mode != ScanMode::Fused && options.mode != ScanMode::SelectionVector) {
-    throw std::invalid_argument("zone_map_scan: unknown ScanMode");
+  return scan_candidates(table, query.predicate, std::views::iota(std::size_t{0}, blocks), options);
+}
+
+Execution index_scan(const IndexedTable& table, DeviceEquals predicate,
+                     const ScanOptions& options) {
+  validate_scan_options(options);
+  const auto candidates = table.device_index().candidate_blocks(predicate.value);
+  return scan_candidates(table.table(), predicate, candidates, options);
+}
+
+AutoExecution auto_scan(const IndexedTable& indexed, const Query& query, int max_threads) {
+  if (max_threads < 1) {
+    throw std::invalid_argument("auto_scan: max_threads must be >= 1");
+  }
+#ifndef _OPENMP
+  max_threads = 1;
+#endif
+
+  const ZoneMappedTable& table = indexed.table();
+  const auto zone_candidates = table.zone_map().candidate_blocks(query.predicate);
+  StrategyEstimates estimates{table.zone_map().layout().block_count(), zone_candidates.size(), {}};
+  std::span<const std::size_t> index_candidates;
+  if (const auto* equals = std::get_if<DeviceEquals>(&query.predicate)) {
+    index_candidates = indexed.device_index().candidate_blocks(equals->value);
+    estimates.index_blocks = index_candidates.size();
   }
 
-  // Everything that can allocate or throw happens here, before any parallel region.
-  const ZoneMap& zone_map = table.zone_map();
-  const BlockLayout& layout = zone_map.layout();
-  const std::vector<std::size_t> candidates = zone_map.candidate_blocks(query.predicate);
-  std::vector<BlockRange> ranges;
-  ranges.reserve(candidates.size());
-  std::size_t largest_block = 0;
-  for (const std::size_t b : candidates) {
-    ranges.push_back(layout.block(b));
-    largest_block = std::max(largest_block, ranges.back().size());
+  const ExecutionPlan plan = choose_strategy(estimates, max_threads);
+  const ScanOptions options{ScanMode::Fused, plan.threads};
+  switch (plan.strategy) {
+    case ScanStrategy::Full:
+      return {full_scan(table, query, options), plan};
+    case ScanStrategy::ZoneMap:
+      return {scan_candidates(table, query.predicate, zone_candidates, options), plan};
+    case ScanStrategy::Index:
+      return {scan_candidates(table, query.predicate, index_candidates, options), plan};
   }
-  if (options.mode == ScanMode::SelectionVector && largest_block > kMaxSelectableRows) {
-    throw std::length_error(
-        "zone_map_scan: a candidate block has more rows than a selection vector can address");
-  }
-
-  const BlockPartial total = std::visit(
-      [&](const auto& predicate) -> BlockPartial {
-        using P = std::decay_t<decltype(predicate)>;
-        if (options.mode == ScanMode::Fused) {
-          const CandidateScanner<P, ScanMode::Fused> scanner(table.store(), ranges, predicate,
-                                                             largest_block);
-          return scan_blocks_parallel(scanner, options.threads);
-        }
-        const CandidateScanner<P, ScanMode::SelectionVector> scanner(table.store(), ranges,
-                                                                     predicate, largest_block);
-        return scan_blocks_parallel(scanner, options.threads);
-      },
-      query.predicate);
-
-  Execution execution;
-  execution.result = QueryResult{total.count, total.sum};
-  execution.stats.blocks_total = layout.block_count();
-  execution.stats.blocks_scanned = total.blocks;  // reduced over the threads
-  execution.stats.blocks_skipped = layout.block_count() - candidates.size();
-  execution.stats.rows_examined = total.rows_examined;
-  execution.stats.rows_matched = static_cast<std::uint64_t>(total.count);
-  return execution;
+  throw std::logic_error("Unknown scan strategy");
 }
 
 }  // namespace cqe

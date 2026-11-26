@@ -15,7 +15,7 @@ namespace cqe {
 //   - rows_matched == result.count, and rows_matched <= rows_examined;
 //   - blocks_scanned == blocks_total implies rows_examined == n;
 //   - blocks_scanned == 0 implies rows_examined == 0 and an empty result.
-// The empty table has every counter at 0. (The chosen strategy is added with auto mode.)
+// The empty table has every counter at 0.
 struct ExecutionStats {
   std::uint64_t blocks_total = 0;
   std::uint64_t blocks_scanned = 0;

@@ -1,8 +1,10 @@
 #pragma once
 
+#include "cqe/block_index.hpp"
 #include "cqe/column_store.hpp"
 #include "cqe/row_store.hpp"
 #include "cqe/stats.hpp"
+#include "cqe/strategy.hpp"
 #include "cqe/types.hpp"
 #include "cqe/zone_mapped_table.hpp"
 
@@ -25,7 +27,7 @@ namespace cqe {
 // baseline; the ScanOptions overload below adds modes and threads.
 [[nodiscard]] Execution zone_map_scan(const ZoneMappedTable& table, const Query& query);
 
-// How a zone-map scan processes each candidate block.
+// How a block scan processes each candidate block.
 enum class ScanMode {
   // Filter and aggregate in one loop (the full-scan loop).
   Fused,
@@ -49,5 +51,27 @@ struct ScanOptions {
 // limit applies to the actual size of the blocks being scanned, not to the block capacity.
 [[nodiscard]] Execution zone_map_scan(const ZoneMappedTable& table, const Query& query,
                                       const ScanOptions& options);
+
+// Scan every block and report statistics. The default fused serial scan uses the column-store
+// full scan. Other modes and thread counts use the same block executor as zone_map_scan.
+[[nodiscard]] Execution full_scan(const ZoneMappedTable& table, const Query& query,
+                                  const ScanOptions& options = {});
+
+// Scan the table's postings for the supplied equality predicate, applying the predicate again
+// to each row of those blocks. The ScanOptions contract is the same as for zone_map_scan.
+[[nodiscard]] Execution index_scan(const IndexedTable& table, DeviceEquals predicate,
+                                   const ScanOptions& options = {});
+
+struct AutoExecution {
+  Execution execution;
+  ExecutionPlan plan;  // Chosen strategy and requested worker limit.
+};
+
+// Choose and execute a fused scan, reporting its plan and statistics. Candidate discovery and
+// the choice are part of this call. Timestamp predicates are eligible for full and zone-map
+// scans, and equality predicates can also use the index. max_threads must be >= 1.
+// Builds without OpenMP choose with a worker budget of 1.
+[[nodiscard]] AutoExecution auto_scan(const IndexedTable& table, const Query& query,
+                                      int max_threads = 1);
 
 }  // namespace cqe

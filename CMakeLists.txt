@@ -10,6 +10,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 option(CQE_BUILD_TESTS "Build the test suite" ON)
+option(CQE_BUILD_CALIBRATION "Build the scan calibration microbenchmark" OFF)
 option(CQE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors in project targets" OFF)
 option(CQE_OPENMP "Build parallel execution with OpenMP" ON)
 option(CQE_OMP_TSAN_CHECKS
@@ -29,6 +30,7 @@ target_compile_options(cqe_warnings INTERFACE
   $<$<BOOL:${CQE_WARNINGS_AS_ERRORS}>:-Werror>)
 
 add_library(cqe STATIC
+  src/block_index.cpp
   src/block_layout.cpp
   src/block_skip.cpp
   src/column_store.cpp
@@ -38,6 +40,7 @@ add_library(cqe STATIC
   src/parallel_scan.cpp
   src/reference.cpp
   src/row_store.cpp
+  src/strategy.cpp
   src/sum_bound.cpp
   src/zone_map.cpp
   src/zone_mapped_table.cpp)
@@ -46,6 +49,11 @@ target_compile_features(cqe PUBLIC cxx_std_20)
 target_link_libraries(cqe PRIVATE cqe_warnings)
 if(CQE_OPENMP)
   target_link_libraries(cqe PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
+if(CQE_BUILD_CALIBRATION)
+  add_executable(cqe_calibrate bench/calibrate.cpp)
+  target_link_libraries(cqe_calibrate PRIVATE cqe cqe_warnings)
 endif()
 
 if(CQE_BUILD_TESTS)

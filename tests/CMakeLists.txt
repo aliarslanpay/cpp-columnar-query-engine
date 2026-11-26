@@ -13,6 +13,7 @@ FetchContent_Declare(googletest
 FetchContent_MakeAvailable(googletest)
 
 add_executable(cqe_tests
+  test_block_index.cpp
   test_block_layout.cpp
   test_block_skip.cpp
   test_column_store.cpp
@@ -21,6 +22,7 @@ add_executable(cqe_tests
   test_fixtures.cpp
   test_kernels.cpp
   test_row_store.cpp
+  test_strategy.cpp
   test_sum_bound.cpp
   test_zone_map.cpp
   test_zone_map_scan.cpp)
@@ -30,7 +32,8 @@ target_link_libraries(cqe_tests PRIVATE cqe cqe_warnings GTest::gtest_main)
 # so a preset can include or exclude them as a group.
 add_executable(cqe_parallel_tests
   test_parallel_execution.cpp
-  test_parallel_scan.cpp)
+  test_parallel_scan.cpp
+  test_strategy_execution.cpp)
 target_link_libraries(cqe_parallel_tests PRIVATE cqe cqe_warnings GTest::gtest_main)
 if(CQE_OPENMP)
   target_link_libraries(cqe_parallel_tests PRIVATE OpenMP::OpenMP_CXX)
