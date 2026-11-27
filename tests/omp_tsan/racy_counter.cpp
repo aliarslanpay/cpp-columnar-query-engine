@@ -14,7 +14,10 @@ namespace {
 constexpr int kThreads = 4;
 constexpr int kIterations = 100000;
 
-long counter = 0;
+// volatile keeps every increment as its own load and store. Without it, the compiler turns each
+// thread's loop into one load and one store, and ThreadSanitizer then missed the race in some
+// runs. volatile does not synchronize anything, so the increments still race.
+volatile long counter = 0;
 
 }  // namespace
 
@@ -30,7 +33,7 @@ int main() {
     }
 #pragma omp for schedule(static)
     for (int i = 0; i < kIterations; ++i) {
-      ++counter;  // the data race under test
+      counter = counter + 1;  // the data race under test (C++20 deprecates ++ on volatile)
     }
   }
 

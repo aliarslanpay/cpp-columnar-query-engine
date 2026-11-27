@@ -4,7 +4,7 @@
 
 namespace cqe {
 
-// Reminder: if a predicate kind is added, the reference must learn it explicitly.
+// Fails to compile when a predicate kind is added, so that the reference is extended explicitly.
 static_assert(std::variant_size_v<Predicate> == 2);
 
 QueryResult reference_evaluate(std::span<const Event> rows, const Query& query) {

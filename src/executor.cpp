@@ -309,7 +309,7 @@ AutoExecution auto_scan(const IndexedTable& indexed, const Query& query, int max
   const ZoneMappedTable& table = indexed.table();
   const auto zone_candidates = table.zone_map().candidate_blocks(query.predicate);
   StrategyEstimates estimates{table.zone_map().layout().block_count(), zone_candidates.size(), {}};
-  std::span<const std::size_t> index_candidates;
+  PostingView index_candidates;
   if (const auto* equals = std::get_if<DeviceEquals>(&query.predicate)) {
     index_candidates = indexed.device_index().candidate_blocks(equals->value);
     estimates.index_blocks = index_candidates.size();

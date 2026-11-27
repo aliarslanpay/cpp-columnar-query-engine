@@ -2,26 +2,41 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <span>
 #include <vector>
 
+#include "cqe/posting_view.hpp"
 #include "cqe/zone_mapped_table.hpp"
 
 namespace cqe {
 
-// Immutable device postings. An IndexedTable builds them from its own store and block layout.
+// For each device the base followed by the delta lists exactly its occupied blocks, in
+// strictly increasing order. Lookups borrow both segments. When delta postings exceed
+// max(64, base postings / 8), compaction streams both into a new base in linear time
+// and temporary space. Ordinary appends only update devices in the batch.
 class DeviceBlockIndex {
  public:
-  // Exact, strictly increasing block IDs for this device, or an empty span if it is absent.
-  // The span refers to the index's storage and is valid until the index is moved or destroyed.
-  [[nodiscard]] std::span<const std::size_t> candidate_blocks(std::int32_t device_id) const noexcept;
+  // Exact, strictly increasing block IDs for this device, or an empty view if it is absent.
+  // The view expires on successful nonempty append, move or destruction.
+  [[nodiscard]] PostingView candidate_blocks(std::int32_t device_id) const noexcept;
 
-  // Bytes occupied by the directory and postings entries, including any entry padding.
-  // Excludes vector objects, unused capacity and temporary build storage.
+  // Base directory entries (including padding), delta device keys and all block IDs.
+  // Excludes container objects, tree-node overhead, spare capacity and temporary storage.
   [[nodiscard]] std::size_t logical_bytes() const noexcept;
 
+  [[nodiscard]] std::size_t merge_count() const noexcept { return merge_count_; }
+
  private:
+  friend class ZoneMappedTable;
   friend class IndexedTable;
+  using Delta = std::map<std::int32_t, std::vector<std::size_t>>;
+  std::span<const std::size_t> base_blocks(std::int32_t id) const noexcept;
+  void append(std::span<const Event> rows, const BlockLayout& old_layout);
+  void compact(const Delta& additions);
+  Delta delta_;
+  std::size_t delta_size_ = 0;
+  std::size_t merge_count_ = 0;
 
   struct DirectoryEntry {
     std::int32_t device_id;
@@ -41,6 +56,9 @@ class DeviceBlockIndex {
 class IndexedTable {
  public:
   explicit IndexedTable(ZoneMappedTable table);
+
+  // Same exclusivity, view lifetime and strong exception guarantee as ZoneMappedTable::append.
+  void append(std::span<const Event> rows);
 
   IndexedTable(const IndexedTable&) = default;
   // The moved-from object is an empty table with empty metadata.

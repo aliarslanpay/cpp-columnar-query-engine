@@ -42,6 +42,7 @@ class ColumnStore {
   [[nodiscard]] AmountTotals amount_totals() const noexcept { return amount_totals_; }
 
  private:
+  friend class ZoneMappedTable;
   // Declared first so that the invariant is checked before any column is filled.
   AmountTotals amount_totals_;
   std::vector<std::int64_t> timestamp_;

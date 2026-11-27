@@ -11,6 +11,7 @@ set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 option(CQE_BUILD_TESTS "Build the test suite" ON)
 option(CQE_BUILD_CALIBRATION "Build the scan calibration microbenchmark" OFF)
+option(CQE_BUILD_APPEND_BENCHMARK "Build the append maintenance benchmark" OFF)
 option(CQE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors in project targets" OFF)
 option(CQE_OPENMP "Build parallel execution with OpenMP" ON)
 option(CQE_OMP_TSAN_CHECKS
@@ -54,6 +55,11 @@ endif()
 if(CQE_BUILD_CALIBRATION)
   add_executable(cqe_calibrate bench/calibrate.cpp)
   target_link_libraries(cqe_calibrate PRIVATE cqe cqe_warnings)
+endif()
+
+if(CQE_BUILD_APPEND_BENCHMARK)
+  add_executable(cqe_bench_append bench/bench_append.cpp)
+  target_link_libraries(cqe_bench_append PRIVATE cqe cqe_warnings)
 endif()
 
 if(CQE_BUILD_TESTS)

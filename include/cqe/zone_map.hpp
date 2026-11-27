@@ -29,10 +29,10 @@ struct BlockZone {
 // The empty table has no blocks and no zones. No zone is empty, so no sentinel values are used.
 //
 // Lifecycle: a ZoneMap copies what it needs and holds no pointer or reference to the store it
-// was built from. It describes that store's rows at construction time. Queries do not take a
+// was built from. The owning table updates it when rows are appended. Queries do not take a
 // store and a zone map as two independent arguments; they go through ZoneMappedTable, which owns
-// a store and the zone map built from it (zone_mapped_table.hpp). Immutable after construction,
-// so concurrent readers are safe.
+// a store and the zone map built from it (zone_mapped_table.hpp). Concurrent readers require
+// that no append is in progress.
 class ZoneMap {
  public:
   // Throws std::invalid_argument if block_capacity == 0.
@@ -58,6 +58,7 @@ class ZoneMap {
   ~ZoneMap() = default;
 
  private:
+  friend class ZoneMappedTable;
   BlockLayout layout_;
   std::vector<BlockZone> zones_;
 };

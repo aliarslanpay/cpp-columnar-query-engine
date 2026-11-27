@@ -10,6 +10,8 @@
 
 namespace cqe {
 
+class DeviceBlockIndex;
+
 // A column store together with the zone map built from it: the unit a zone-map query runs on.
 //
 // The table owns its store and builds the zone map from that store in its constructor, so the
@@ -24,6 +26,11 @@ class ZoneMappedTable {
   // or if block_capacity == 0.
   explicit ZoneMappedTable(std::span<const Event> rows,
                            std::size_t block_capacity = BlockLayout::kDefaultCapacity);
+
+  // Exclusive operation. Nonempty success invalidates borrowed views. Empty input and
+  // exceptions preserve all rows, metadata and outstanding views. After success, columns,
+  // amount totals, layout and block extrema match construction from the concatenated rows.
+  void append(std::span<const Event> rows);
 
   // Read-only access, for example to run the full-scan baseline on the same data.
   [[nodiscard]] const ColumnStore& store() const noexcept { return store_; }
@@ -41,6 +48,8 @@ class ZoneMappedTable {
   ~ZoneMappedTable() = default;
 
  private:
+  friend class IndexedTable;
+  void append_impl(std::span<const Event> rows, DeviceBlockIndex* index);
   ColumnStore store_;  // declared first: zone_map_ is built from it
   ZoneMap zone_map_;
 };

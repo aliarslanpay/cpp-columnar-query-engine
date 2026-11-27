@@ -55,8 +55,8 @@ Execution expect_all_modes_and_threads_agree(const std::vector<Event>& rows,
   return baseline;
 }
 
-// Ten rows, capacity 4 (the same data as the zone-map scan fixtures): B0 = rows 0-3, B1 = rows 4-7, B2 = rows 8-9;
-// row i has timestamp 10 + i and amount 2^i.
+// Ten rows, capacity 4 (the same data as the zone-map scan fixtures): B0 = rows 0-3,
+// B1 = rows 4-7, B2 = rows 8-9; row i has timestamp 10 + i and amount 2^i.
 std::vector<Event> ten_rows() {
   return {{10, 1, 1},  {11, 1, 2},  {12, 2, 4},  {13, 2, 8},   {14, 3, 16},
           {15, 3, 32}, {16, 4, 64}, {17, 4, 128}, {18, 5, 256}, {19, 5, 512}};
