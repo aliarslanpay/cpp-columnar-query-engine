@@ -1,0 +1,4 @@
+rows=1048576 block_capacity=1024 seed=7 lo=1700000787873 hi=1700000789458 reference_count=1048 reference_sum=-19998005
+clustered: full=match zone_map=match blocks_scanned=2/1024
+shuffled: full=match zone_map=match blocks_scanned=1024/1024
+verified=yes

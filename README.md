@@ -32,7 +32,7 @@ no `GROUP BY`, no NULLs, no floating-point columns, no updates or deletes, no pe
 concurrent writes (append is exclusive), no distributed execution and no hand-written SIMD
 kernels. No continuous-integration setup is included, so no hosted CI result is claimed.
 
-## Build and test
+## Build and test from a clean clone
 
 Verified on Ubuntu 24.04 (WSL2, x86-64) with Clang 18.1.3, CMake 3.28.3 and Ninja 1.11.1. The
 presets name `clang-18` and `clang++-18` explicitly. The verification machine had these Ubuntu
@@ -110,13 +110,15 @@ include/cqe/   public headers: data model, stores, block layout, zone map, devic
                kernels, parallel block scan, cost model, executor, generator, reference
 src/           implementations (library target `cqe`)
 tests/         GoogleTest suites, the allocation-failure test, OpenMP/TSan control programs
-bench/         calibration and append benchmarks, cost-model fit
-results/       raw benchmark output
+bench/         calibration, append and ordering benchmarks, coefficient fit, result summary
+results/       raw benchmark output used by docs/MEASUREMENTS.md
+docs/          DESIGN.md and MEASUREMENTS.md
 ```
 
 Storage holds data, metadata and indexes only produce candidate blocks, the executor always
 applies the exact predicate to every row of a scanned block, and the benchmarks measure. The
-contract of each component is documented in its header under `include/cqe/`.
+design decisions, the pruning-safety argument, the parallel reduction and the append invariant
+are described in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Correctness contract
 
@@ -131,18 +133,17 @@ contract of each component is documented in its header under `include/cqe/`.
   Construction and append reject rows that would break this.
 - Parallel results and statistics do not depend on the worker count; the tests compare 1, 2, 4
   and 8 workers.
-- After every successful append, the columns, zone maps and index postings equal those of a
-  table built from scratch over the same rows; a failed append leaves the table unchanged.
+- After every successful append, the columns, zone maps and index postings match a table
+  built from scratch over the same rows. A failed append leaves the table unchanged.
 
 ## Measured results
 
-All numbers below are medians of `elapsed_ns / repetitions` over five samples per
-configuration, computed from the raw files in [results/](results/). They were measured on one
-machine (Intel Core i7-11800H, 16 logical CPUs, WSL2) with warm caches, and describe that setup
-only.
+All numbers come from the raw files in [results/](results/), on one machine (Intel Core
+i7-11800H, WSL2), with warm caches and five samples per configuration. Conditions, commands and
+the full tables are in [docs/MEASUREMENTS.md](docs/MEASUREMENTS.md).
 
-Equality predicates on a 131,072-row, time-ordered fixture (128 blocks of 1,024 rows), worker
-budget 8, median nanoseconds per query (`results/scan-calibration-final.csv`):
+Equality predicates on a 131,072-row fixture (128 blocks of 1,024 rows), worker budget 8, median
+nanoseconds per query:
 
 | Device | Blocks listed by the index | Full scan | Index scan | Auto (end to end) |
 |---|---:|---:|---:|---:|
@@ -152,44 +153,21 @@ budget 8, median nanoseconds per query (`results/scan-calibration-final.csv`):
 
 - The index only helps when it excludes blocks. For the common device it lists every block, and
   the index and auto paths were slightly slower than the forced full scan.
-- On the same time-ordered rows, a serial zone-map scan of 1 candidate block took 991 ns against
+- On time-ordered rows, a serial zone-map scan of 1 candidate block took 991 ns against
   90518 ns for the serial full scan. With all 128 blocks as candidates the serial zone-map scan
   (115355 ns) was slower than the serial contiguous full scan (102408 ns).
-- With 128 candidate blocks, a four-worker budget delivered a 1.6–5.8× speedup over one worker across 16 benchmark configurations.
-- Auto includes candidate discovery and the decision. Its timings come from the same fixture
-  that the cost model was fitted on, so they are not an independent evaluation of the selector.
+- For the same 1,048,576 generated rows and a range matching 0.1% of them, the zone map
+  scanned 2 of 1,024 blocks in time order (3482 ns versus 735759 ns for the full scan).
+  On shuffled rows it scanned all 1,024 blocks (813585 ns versus 780421 ns for the full scan).
+- Across 16 configurations that scanned all 128 blocks, a worker budget of 4 gave a
+  1.6–5.8× speedup over a budget of 1. A budget of 8 reduced median query time in 6
+  configurations and increased it in 10. In three configurations with widely spread
+  4-worker samples, the median time fell by 39–47%. In the other 13, the change ranged
+  from 2% lower to 19% higher.
+- The auto timings come from the same fixture that the cost model was fitted on, so they are
+  not an independent evaluation of the selector.
 - Appending one row with maintenance took a median 530.5 ns per call, against 458746 ns for
-  rebuilding the zone-mapped, indexed table from all of its roughly 32,800 rows
-  (`results/append-maintenance.csv`). For batches of 2,305 rows the sequence total was 19.1
-  times smaller than rebuilding after every batch, against 487.8 times for single rows.
-
-**Raw files.**
-
-- `results/scan-calibration.csv` is the input of `bench/fit_costs.py`, which reproduces the
-  cost-model constants in `src/strategy.cpp`. Its `auto` rows were recorded before the selector
-  was calibrated and are not used.
-- `results/scan-calibration-final.csv` was recorded with the calibrated selector, before append
-  maintenance was added. Index lookups now also consult the append delta, so its index-lookup
-  timings describe the earlier lookup path.
-- `results/append-maintenance.csv` was recorded with the sources of this version.
-
-**Reproducing the runs.** The benchmark results are written to `results/tmp/`, which git
-ignores:
-
-```bash
-cmake --preset release -DCQE_BUILD_CALIBRATION=ON -DCQE_BUILD_APPEND_BENCHMARK=ON
-cmake --build --preset release
-mkdir -p results/tmp
-env OMP_DYNAMIC=FALSE OMP_NUM_THREADS=8 OMP_PROC_BIND=close OMP_PLACES=cores \
-  build/release/cqe_calibrate > results/tmp/calibration.csv 2> results/tmp/calibration.log
-build/release/cqe_bench_append > results/tmp/append.csv
-python3 bench/fit_costs.py results/tmp/calibration.csv
-```
-
-`cqe_calibrate` compares each scan configuration's result with the reference once before
-timing it, and exits with status 1 if any comparison fails. `cqe_bench_append` compares the
-maintained table, a rebuilt table and the reference after every batch, and stops with an
-exception on a mismatch.
+  rebuilding the zone-mapped, indexed table from all of its roughly 32,800 rows.
 
 ## Limitations
 
@@ -200,18 +178,18 @@ exception on a mismatch.
   has not been inspected and is not claimed.
 - The cost-model coefficients were fitted on one machine for fused scans, warm caches and
   1,024-row blocks.
-- Measurements use small warm fixtures on a WSL2 virtual machine and five samples per
-  configuration. They describe this setup and are not general speedup claims.
+- Measurements use small warm fixtures on a WSL2 virtual machine. They describe this setup and
+  are not general speedup claims.
 - The tests that inject allocation failures rely on the GNU linker's `--wrap` option on
   Linux x86-64.
 
 ## Not done
 
 - AVX2 or other SIMD filter kernels and runtime dispatch.
-- A row-store vs column-store benchmark, a selectivity sweep, a clustered vs shuffled ordering
-  comparison, Zipf-distributed equality benchmarks, thread scaling beyond the calibration
-  fixture, an independent evaluation of the automatic strategy choice, and runs at other table
-  sizes or block capacities.
+- A row-store vs column-store benchmark, a selectivity sweep, the ordering comparison beyond one
+  predicate and one run, Zipf-distributed equality benchmarks, thread scaling beyond the
+  calibration fixture, an independent evaluation of the automatic strategy choice, and runs at
+  other table sizes or block capacities.
 - An environment record written by the benchmarks themselves, and a check that per-query times
   agree when the repetition count is doubled.
 - Updates, deletes, persistence, SQL and multi-predicate queries (out of scope).

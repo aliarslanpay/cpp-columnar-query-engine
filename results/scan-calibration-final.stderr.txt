@@ -1,0 +1,1 @@
+rows=131072 block_capacity=1024 index_build_ns=2545912 index_logical_bytes=2104 index_verified=yes
